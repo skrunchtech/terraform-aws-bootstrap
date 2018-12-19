@@ -1,0 +1,150 @@
+#++++++++++++++++++++++++++++
+# Base makefile 
+#++++++++++++++++++++++++++++
+
+TERRAFORM_VERSION ?= 0.11.8
+
+# TERRAFORM INSTALL
+version  ?= $(TERRAFORM_VERSION)
+os       ?= $(shell uname|tr A-Z a-z)
+ifeq ($(shell uname -m),x86_64)
+  arch   ?= "amd64"
+endif
+ifeq ($(shell uname -m),i686)
+  arch   ?= "386"
+endif
+ifeq ($(shell uname -m),aarch64)
+  arch   ?= "arm"
+endif
+
+# INTERNAL VARIABLES
+# Read all subsquent tasks as arguments of the first task
+# RUN_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
+# $(eval $(args) $(RUN_ARGS):;@:)
+TERRAFORM_CMD = $(TOPDIR)/bin/terraform-$(version)
+TERRAFORM := $(shell command -v $(TOPDIR)/bin/terraform-$(version) 2> /dev/null)
+NO_COLOR=\x1b[0m
+OK_COLOR=\x1b[32;01m
+ERROR_COLOR=\x1b[31;01m
+WARN_COLOR=\x1b[33;01m
+OK_STRING=$(OK_COLOR)[OK]$(NO_COLOR)
+ERROR_STRING=$(ERROR_COLOR)[ERRORS]$(NO_COLOR)
+WARN_STRING=$(WARN_COLOR)[WARNINGS]$(NO_COLOR)
+LOCK_TABLE ?= "tf_lock"
+
+# TASKS
+all: help
+
+apply: ## Runs Terraform apply
+apply: plan
+	CD $(DIR) && $(TERRAFORM_CMD) apply $(TFVARS) $(target)
+
+apply-target: ## Runs Terraform apply with the target provided as "target=<target>"
+apply-target:
+	CD $(DIR) && $(TERRAFORM_CMD) apply --target=$(target)
+
+destroy: ## Destroys all of the infra in the state (PROCEED WITH CAUTION)
+destroy:	init plan-destroy
+	CD $(DIR) && $(TERRAFORM_CMD) destroy
+
+destroy-target: ## Destroys a specific resource.  This will destroy chained resources.  
+destroy-target: init
+	@echo "$(WARN_COLOR)"
+	@echo "This will destroy the given resource"
+	@echo "Example to type for the following question: aws_iam_user.username"
+	@echo "$(ERROR_COLOR)"
+	@read -p "Destroy target: " DATA &&\
+		CD $(DIR) && $(TERRAFORM_CMD) destroy --target=$$DATA
+
+fmt:  ## Runs Terraform Format 
+fmt: 
+	@$(TERRAFORM_CMD) fmt; \
+	echo
+
+generate-conf: ## Creates backend.conf file. To use generate-conf STATE_BUCKET=<BUCKET_NAME> LOCK_TABLE=<DYNAMO_LOCK_TABLE> or set Environment variables before running
+generate-conf: 
+	@echo "bucket=\"$(STATE_BUCKET)\"\ndynamodb_table=\"$(LOCK_TABLE)\"" > $(TOPDIR)/common/backend.conf
+
+help: ## This help dialog.
+		@IFS=$$'\n' ; \
+		help_lines=(`fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##/:/'`); \
+		printf "Usage:\n" ; \
+		printf "\n	AWS_PROFILE=<aws_profile_name> make <target>\n\n" ; \
+		printf "%-30s %s\n" "target" "help" ; \
+		printf "%-30s %s\n" "------" "----" ; \
+		for help_line in $${help_lines[@]}; do \
+				IFS=$$':' ; \
+				help_split=($$help_line) ; \
+				help_command=`echo $${help_split[0]} | sed -e 's/^ *//' -e 's/ *$$//'` ; \
+				help_info=`echo $${help_split[2]} | sed -e 's/^ *//' -e 's/ *$$//'` ; \
+				printf '\033[36m'; \
+				printf "%-30s %s" $$help_command ; \
+				printf '\033[0m'; \
+				printf "%s\n" $$help_info; \
+		done
+
+import: ## Import an existing resource
+import: verify-aws-profile-set
+	@echo "$(OK_COLOR)"
+	@echo  "Enter the resource to import"
+	@echo  "Example: aws_security_group.elb_sg sg-903004f8"
+	@echo "$(ERROR_COLOR)"
+	@read -p "Import: " RESOURCE &&\
+		CD $(DIR) && $(TERRAFORM_CMD) import $$RESOURCE
+
+init: ## Install terraform and dependencies
+init: install verify-aws-profile-set
+	@$(TERRAFORM_CMD) --version
+	@$(TERRAFORM_CMD) init --backend-config="$(TOPDIR)/common/backend.conf" \
+							--backend-config="key=$(TF_S3_PREFIX)" \
+							--backend-config="region=$(REGION)"
+
+install:
+ifndef TERRAFORM
+		@wget -O $(TOPDIR)/bin/terraform.zip https://releases.hashicorp.com/terraform/$(version)/terraform_$(version)_$(os)_$(arch).zip 
+		@unzip -d $(TOPDIR)/bin $(TOPDIR)/bin/terraform.zip && rm $(TOPDIR)/bin/terraform.zip 
+		@mv $(TOPDIR)/bin/terraform $(TOPDIR)/bin/terraform-$(TERRAFORM_VERSION)
+endif
+
+output: ## Shows the output from the state
+output: verify-aws-profile-set
+	CD $(DIR) && $(TERRAFORM_CMD) output 
+
+output-secret: ## Outputs a Secret using keybase "make output-secret"
+output-secret: verify-aws-profile-set
+	@echo "$(OK_COLOR)"
+	@echo  "Decrypt an encrypted key or password using keybase"
+	@echo  "Example to type for the following question: username_encrypted_secret_key_v1"
+	@echo "$(ERROR_COLOR)"
+	@read -p "Decrypt target: " KEY &&\
+		CD $(DIR) && $(TERRAFORM_CMD) output $$KEY |base64 --decode |keybase pgp decrypt
+
+plan: ## Runs Terraform plan
+plan: init fmt
+	CD $(DIR) && $(TERRAFORM_CMD) plan $(TFVARS) $(TFARGS)
+
+plan-target: ## Runs Terraform plan for a specific target resource
+plan-target: init fmt
+	@tput setaf 3; tput bold; echo "[INFO]   "; tput sgr0; \
+		echo "Example to type for the following question: module.rds.aws_route53_record.rds-master"
+	@read -p "PLAN target: " DATA &&\
+		CD $(DIR) && $(TERRAFORM_CMD) plan $(TFVARS) -target=$$DATA
+
+plan-destroy: ## Displays a destruction plan
+plan-destroy: init fmt
+	CD $(DIR) && $(TERRAFORM_CMD) plan -destroy
+
+refresh: ## Refreshes state
+refresh: init fmt
+	CD $(DIR) && $(TERRAFORM_CMD) refresh
+
+show: ## Shows the state
+show: init fmt
+	CD $(DIR) && $(TERRAFORM_CMD) show
+
+verify-aws-profile-set:
+ifndef AWS_PROFILE
+		$(error AWS_PROFILE is not defined. Make sure that you set your AWS profile and region.)
+endif
+
+.PHONY: all apply apply-target destroy destroy-target fmt help import init install output output-secret plan show verify-aws-profile-set
