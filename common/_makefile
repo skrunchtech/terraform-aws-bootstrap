@@ -41,7 +41,10 @@ apply: plan
 
 apply-target: ## Runs Terraform apply with the target provided as "target=<target>"
 apply-target:
-	CD $(DIR) && $(TERRAFORM_CMD) apply --target=$(target)
+	@tput setaf 3; tput bold; echo "[INFO]   "; tput sgr0; \
+	echo "Example to type for the following question: module.rds.aws_route53_record.rds-master"
+	@read -p "Apply target: " DATA &&\
+	CD $(DIR) && $(TERRAFORM_CMD) apply $(TFVARS) -target=$$DATA
 
 destroy: ## Destroys all of the infra in the state (PROCEED WITH CAUTION)
 destroy:	init plan-destroy

@@ -1,0 +1,4 @@
+bin/terraform*
+.python-version
+ignore_file
+.terraform
