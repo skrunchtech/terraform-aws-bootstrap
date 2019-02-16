@@ -3,6 +3,7 @@ REGION := us-east-1
 
 .EXPORT_ALL_VARIABLES:
 TERRAFORM_VERSION := 0.11.7
+TFLINT_VERSION := 0.7.3
 TF_S3_PREFIX := regions/$(REGION)/$(USER)
 TF_BUCKET_REGION := us-east-1
 DIR := $(shell pwd)

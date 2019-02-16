@@ -3,9 +3,11 @@
 #++++++++++++++++++++++++++++
 
 TERRAFORM_VERSION ?= 0.11.8
+TFLINT_VERSION ?= 0.7.3
 
 # TERRAFORM INSTALL
-version  ?= $(TERRAFORM_VERSION)
+version-tf  ?= $(TERRAFORM_VERSION)
+version-tflint ?= $(TFLINT_VERSION)
 os       ?= $(shell uname|tr A-Z a-z)
 ifeq ($(shell uname -m),x86_64)
   arch   ?= "amd64"
@@ -21,8 +23,10 @@ endif
 # Read all subsquent tasks as arguments of the first task
 # RUN_ARGS := $(wordlist 2,$(words $(MAKECMDGOALS)),$(MAKECMDGOALS))
 # $(eval $(args) $(RUN_ARGS):;@:)
-TERRAFORM_CMD = $(TOPDIR)/bin/terraform-$(version)
-TERRAFORM := $(shell command -v $(TOPDIR)/bin/terraform-$(version) 2> /dev/null)
+TERRAFORM_CMD = $(TOPDIR)/bin/terraform-$(version-tf)
+TERRAFORM := $(shell command -v $(TOPDIR)/bin/terraform-$(version-tf) 2> /dev/null)
+TFLINT_CMD = $(TOPDIR)/bin/tflint-$(version-tflint)
+TFLINT := $(shell command -v $(TOPDIR)/bin/tflint-$(version-tflint) 2> /dev/null)
 NO_COLOR=\x1b[0m
 OK_COLOR=\x1b[32;01m
 ERROR_COLOR=\x1b[31;01m
@@ -36,18 +40,18 @@ LOCK_TABLE ?= "tf_lock"
 all: help
 
 apply: ## Runs Terraform apply
-apply: plan
+apply: validate
 	CD $(DIR) && $(TERRAFORM_CMD) apply $(TFVARS) $(target)
 
 apply-target: ## Runs Terraform apply with the target provided as "target=<target>"
-apply-target:
+apply-target: validate
 	@tput setaf 3; tput bold; echo "[INFO]   "; tput sgr0; \
 	echo "Example to type for the following question: module.rds.aws_route53_record.rds-master"
 	@read -p "Apply target: " DATA &&\
 	CD $(DIR) && $(TERRAFORM_CMD) apply $(TFVARS) -target=$$DATA
 
 destroy: ## Destroys all of the infra in the state (PROCEED WITH CAUTION)
-destroy:	init plan-destroy
+destroy: init plan-destroy
 	CD $(DIR) && $(TERRAFORM_CMD) destroy
 
 destroy-target: ## Destroys a specific resource.  This will destroy chained resources.  
@@ -95,18 +99,27 @@ import: verify-aws-profile-set
 	@read -p "Import: " RESOURCE &&\
 		CD $(DIR) && $(TERRAFORM_CMD) import $$RESOURCE
 
-init: ## Install terraform and dependencies
-init: install verify-aws-profile-set
+init: ## Install terraform, tflint and dependencies
+init: install-tf install-tflint verify-aws-profile-set
 	@$(TERRAFORM_CMD) --version
 	@$(TERRAFORM_CMD) init --backend-config="$(TOPDIR)/common/backend.conf" \
 							--backend-config="key=$(TF_S3_PREFIX)" \
 							--backend-config="region=$(REGION)"
 
-install:
+install-tf: ## Install terraforms only
+install-tf: 
 ifndef TERRAFORM
-		@wget -O $(TOPDIR)/bin/terraform.zip https://releases.hashicorp.com/terraform/$(version)/terraform_$(version)_$(os)_$(arch).zip 
+		@wget -O $(TOPDIR)/bin/terraform.zip https://releases.hashicorp.com/terraform/$(version-tf)/terraform_$(version-tf)_$(os)_$(arch).zip 
 		@unzip -d $(TOPDIR)/bin $(TOPDIR)/bin/terraform.zip && rm $(TOPDIR)/bin/terraform.zip 
 		@mv $(TOPDIR)/bin/terraform $(TOPDIR)/bin/terraform-$(TERRAFORM_VERSION)
+endif
+
+install-tflint: ## Install tflint only
+install-tflint:
+ifndef TFLINT
+		@wget -O $(TOPDIR)/bin/tflint.zip https://github.com/wata727/tflint/releases/download/v$(version-tflint)/tflint_$(os)_$(arch).zip
+		@unzip -d $(TOPDIR)/bin $(TOPDIR)/bin/tflint.zip && rm $(TOPDIR)/bin/tflint.zip
+		@mv $(TOPDIR)/bin/tflint $(TOPDIR)/bin/tflint-$(TFLINT_VERSION)
 endif
 
 output: ## Shows the output from the state
@@ -123,18 +136,18 @@ output-secret: verify-aws-profile-set
 		CD $(DIR) && $(TERRAFORM_CMD) output $$KEY |base64 --decode |keybase pgp decrypt
 
 plan: ## Runs Terraform plan
-plan: init fmt
+plan: init validate
 	CD $(DIR) && $(TERRAFORM_CMD) plan $(TFVARS) $(TFARGS)
 
 plan-target: ## Runs Terraform plan for a specific target resource
-plan-target: init fmt
+plan-target: init validate
 	@tput setaf 3; tput bold; echo "[INFO]   "; tput sgr0; \
 		echo "Example to type for the following question: module.rds.aws_route53_record.rds-master"
 	@read -p "PLAN target: " DATA &&\
 		CD $(DIR) && $(TERRAFORM_CMD) plan $(TFVARS) -target=$$DATA
 
 plan-destroy: ## Displays a destruction plan
-plan-destroy: init fmt
+plan-destroy: init validate
 	CD $(DIR) && $(TERRAFORM_CMD) plan -destroy
 
 refresh: ## Refreshes state
@@ -145,9 +158,25 @@ show: ## Shows the state
 show: init fmt
 	CD $(DIR) && $(TERRAFORM_CMD) show
 
+.ONESHELL:
+ERROR=0
+validate: ## Run terraform's native validate command and tflint's validate commands
+validate: fmt
+	make -j validate-tf validate-tflint
+
+validate-tflint:
+	@echo "VALIDATE TFLINT"
+	cd $(DIR)
+	$(TFLINT_CMD) -$(TFVARS)
+
+validate-tf:
+	@echo "VALIDATE TF"
+	cd $(DIR)
+	$(TERRAFORM_CMD) validate $(TFVARS)
+
 verify-aws-profile-set:
 ifndef AWS_PROFILE
 		$(error AWS_PROFILE is not defined. Make sure that you set your AWS profile and region.)
 endif
 
-.PHONY: all apply apply-target destroy destroy-target fmt help import init install output output-secret plan show verify-aws-profile-set
+.PHONY: all apply apply-target destroy destroy-target fmt help import init install-tf install-tflint output output-secret plan show verify-aws-profile-set validate validate-tflint validate-tf
